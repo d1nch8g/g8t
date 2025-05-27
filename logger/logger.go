@@ -30,6 +30,7 @@ func New(level, logFile string) (*Logger, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open log file: %w", err)
 		}
+		f.WriteString("\n")
 		file = f
 		writer = io.MultiWriter(os.Stderr, f)
 	}

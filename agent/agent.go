@@ -2,8 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -91,7 +91,7 @@ func New(cfg *config.Config, log *logger.Logger) (*Agent, error) {
 		config:    &Config{cfg},
 		logger:    log,
 		gptClient: gptClient,
-		history:   NewHistory(20), // Keep last 20 steps
+		history:   NewHistory(10),
 		stepCount: 0,
 		startTime: time.Now(),
 	}, nil
@@ -101,14 +101,12 @@ func createGPTClient(cfg *config.Config) (gpt.Client, error) {
 	switch cfg.Provider {
 	case "openai":
 		return gpt.NewOpenAIClient(cfg.OpenAIKey, cfg.OpenAIModel), nil
-	case "deepseek":
-		return gpt.NewDeepSeekClient(cfg.DeepSeekKey, cfg.DeepSeekModel), nil
-	case "claude":
-		return gpt.NewClaudeClient(cfg.ClaudeKey, cfg.ClaudeModel), nil
 	case "gemini":
 		return gpt.NewGeminiClient(cfg.GeminiKey, cfg.GeminiModel), nil
-	case "yandex":
-		return gpt.NewYandexGPTClient(cfg.FolderID, cfg.IAMToken), nil
+	case "claude":
+		return gpt.NewClaudeClient(cfg.ClaudeKey, cfg.ClaudeModel), nil
+	case "deepseek":
+		return gpt.NewDeepSeekClient(cfg.DeepSeekKey, cfg.DeepSeekModel), nil
 	case "ollama":
 		return gpt.NewOllamaClient(cfg.OllamaURL, cfg.OllamaModel), nil
 	default:
@@ -116,228 +114,153 @@ func createGPTClient(cfg *config.Config) (gpt.Client, error) {
 	}
 }
 
-func (a *Agent) Run() error {
+func (a *Agent) Run(task string) error {
 	a.logger.Info("Starting agent execution",
-		"task", a.config.Task,
+		"task", fmt.Sprintf("%s %s", a.config.Provider, task),
 		"provider", a.config.Provider,
 		"max_commands", a.config.MaxCommands,
 		"dry_run", a.config.DryRun,
 	)
 
-	systemPrompt := a.buildSystemPrompt()
+	systemMessage := `You are an AI assistant that helps execute tasks by running shell commands.
+
+Your response must be a valid JSON object with this exact structure:
+{
+  "thought": "your reasoning about what to do next",
+  "command": "the shell command to execute"
+}
+
+Rules:
+1. Always respond with valid JSON only
+2. Use the "thought" field to explain your reasoning
+3. Use the "command" field for the exact shell command to run
+4. If the task is complete, use "command": "TASK_COMPLETE"
+5. Be careful with destructive operations
+6. Consider the current directory and file structure`
 
 	for a.stepCount < a.config.MaxCommands {
 		a.stepCount++
-
 		a.logger.Info("Starting step", "step", a.stepCount)
 
-		// Build user prompt with context
-		userPrompt := a.buildUserPrompt()
+		// Build user message with context
+		userMessage := fmt.Sprintf("Task: %s\n\n%s\n\nWhat should I do next?", task, a.history.GetContext())
 
 		// Get response from GPT
-		response, err := a.gptClient.Complete(systemPrompt, userPrompt)
+		response, err := a.gptClient.Complete(systemMessage, userMessage)
 		if err != nil {
-			a.logger.Error("Failed to get GPT response", "error", err, "step", a.stepCount)
-			return fmt.Errorf("GPT request failed at step %d: %w", a.stepCount, err)
+			return fmt.Errorf("failed to get GPT response: %w", err)
 		}
 
-		// Parse response
-		thought, command, completed, err := a.parseResponse(response)
+		// Parse the response
+		thought, command, err := a.parseResponse(response)
 		if err != nil {
-			a.logger.Error("Failed to parse GPT response", "error", err, "response", response)
-			return fmt.Errorf("failed to parse response at step %d: %w", a.stepCount, err)
+			a.logger.Error("Failed to parse response", "error", err, "response", response)
+			continue
 		}
 
-		a.logger.LogThought(a.stepCount, thought)
-
-		// Check if task is completed
-		if completed {
-			a.logger.Info("Task completed successfully", "step", a.stepCount)
+		// Check if task is complete
+		if command == "TASK_COMPLETE" {
+			a.logger.Info("Task completed", "thought", thought)
 			return nil
 		}
 
-		// Execute command
-		output, cmdErr := a.executeCommand(command)
-
-		// Create step record
-		step := Step{
-			Number:    a.stepCount,
-			Timestamp: time.Now(),
-			Thought:   thought,
-			Command:   command,
-			Output:    output,
-			Error:     "",
-			Success:   cmdErr == nil,
-		}
-
-		if cmdErr != nil {
-			step.Error = cmdErr.Error()
-		}
-
-		// Add to history
-		a.history.AddStep(step)
-
-		// Log command execution
-		a.logger.LogCommand(a.stepCount, command, output, step.Error)
-
-		if !a.config.Quiet {
-			fmt.Printf("\n--- Step %d ---\n", a.stepCount)
-			fmt.Printf("Thought: %s\n", thought)
-			fmt.Printf("Command: %s\n", command)
-			if output != "" {
-				fmt.Printf("Output: %s\n", output)
-			}
-			if cmdErr != nil {
-				fmt.Printf("Error: %s\n", cmdErr.Error())
-			}
-		}
+		// Execute the command
+		a.executeCommand(thought, command)
 	}
 
-	a.logger.Warn("Maximum command limit reached", "max_commands", a.config.MaxCommands)
-	return fmt.Errorf("maximum command limit (%d) reached without completing the task", a.config.MaxCommands)
+	return fmt.Errorf("reached maximum number of commands (%d)", a.config.MaxCommands)
 }
 
-func (a *Agent) buildSystemPrompt() string {
-	return `You are an AI assistant that helps users complete tasks by executing system commands.
-
-IMPORTANT RULES:
-1. Always respond in the following JSON format:
-   {
-     "thought": "Your reasoning about what to do next",
-     "command": "The shell command to execute (or 'TASK_COMPLETED' if done)",
-     "completed": false
-   }
-
-2. When the task is fully completed, set "completed": true and "command": "TASK_COMPLETED"
-
-3. Be careful with destructive commands. Always verify before making changes.
-
-4. Use relative paths when possible and be mindful of the current working directory.
-
-5. If a command fails, analyze the error and try a different approach.
-
-6. Break complex tasks into smaller, manageable steps.
-
-7. Always provide clear reasoning in the "thought" field.
-
-8. Only execute one command at a time.
-
-Current working directory: ` + getCurrentDir()
-}
-
-func (a *Agent) buildUserPrompt() string {
-	prompt := fmt.Sprintf("Task: %s\n\n", a.config.Task)
-
-	// Add history context
-	if len(a.history.Steps) > 0 {
-		prompt += a.history.GetContext() + "\n\n"
+func (a *Agent) parseResponse(response string) (string, string, error) {
+	// Try to extract JSON from the response
+	jsonStr := a.extractJSON(response)
+	if jsonStr == "" {
+		return "", "", fmt.Errorf("no JSON found in response")
 	}
 
-	prompt += "What should be the next step? Respond in JSON format with thought, command, and completed fields."
-
-	return prompt
+	return a.parseJSON(jsonStr, a.logger)
 }
 
-func (a *Agent) parseResponse(response string) (thought, command string, completed bool, err error) {
-	// Try to extract JSON from response
+func (a *Agent) extractJSON(response string) string {
+	// Look for JSON object boundaries
 	start := strings.Index(response, "{")
-	end := strings.LastIndex(response, "}") + 1
-
-	if start == -1 || end == 0 {
-		return "", "", false, fmt.Errorf("no JSON found in response: %s", response)
+	if start == -1 {
+		return ""
 	}
 
-	jsonStr := response[start:end]
-
-	// Simple JSON parsing for the expected format
-	var result struct {
-		Thought   string `json:"thought"`
-		Command   string `json:"command"`
-		Completed bool   `json:"completed"`
+	// Find the matching closing brace
+	braceCount := 0
+	for i := start; i < len(response); i++ {
+		if response[i] == '{' {
+			braceCount++
+		} else if response[i] == '}' {
+			braceCount--
+			if braceCount == 0 {
+				return response[start : i+1]
+			}
+		}
 	}
 
-	if err := parseJSON(jsonStr, &result); err != nil {
-		return "", "", false, fmt.Errorf("failed to parse JSON: %w", err)
-	}
-
-	return result.Thought, result.Command, result.Completed, nil
+	return ""
 }
 
-func (a *Agent) executeCommand(command string) (string, error) {
-	if command == "TASK_COMPLETED" {
-		return "", nil
+func (a *Agent) parseJSON(jsonStr string, logger *logger.Logger) (string, string, error) {
+	var parsed struct {
+		Thought string `json:"thought"`
+		Command string `json:"command"`
 	}
+
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		// Log the problematic JSON for debugging, but safely truncate it
+		truncatedJSON := jsonStr
+		if len(jsonStr) > 255 {
+			truncatedJSON = jsonStr[:255] + "..."
+		}
+		logger.Error("Failed to parse JSON", "error", err, "json", truncatedJSON)
+		return "", "", fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	if parsed.Thought == "" || parsed.Command == "" {
+		return "", "", fmt.Errorf("missing required fields in JSON response")
+	}
+
+	return parsed.Thought, parsed.Command, nil
+}
+
+func (a *Agent) executeCommand(thought, command string) {
+	step := Step{
+		Number:    a.stepCount,
+		Timestamp: time.Now(),
+		Thought:   thought,
+		Command:   command,
+	}
+
+	a.logger.Info("Executing command", "thought", thought, "command", command)
 
 	if a.config.DryRun {
-		a.logger.Info("DRY RUN - would execute", "command", command)
-		return "[DRY RUN] Command would be executed: " + command, nil
+		a.logger.Info("Dry run mode - command not executed")
+		step.Output = "DRY RUN - command not executed"
+		step.Success = true
+		a.history.AddStep(step)
+		return
 	}
 
-	// Create context with timeout
+	// Execute the command
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Execute command
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	output, err := cmd.CombinedOutput()
 
-	return string(output), err
-}
-
-func getCurrentDir() string {
-	dir, err := os.Getwd()
+	step.Output = string(output)
 	if err != nil {
-		return "unknown"
-	}
-	return dir
-}
-
-// Simple JSON parser for our specific use case
-func parseJSON(jsonStr string, result interface{}) error {
-	// This is a simplified implementation
-	// In a real application, you would use encoding/json
-	// For now, we'll use basic string parsing
-
-	// Extract thought
-	if start := strings.Index(jsonStr, `"thought"`); start != -1 {
-		start = strings.Index(jsonStr[start:], `"`) + start + 1
-		start = strings.Index(jsonStr[start:], `"`) + start + 1
-		end := strings.Index(jsonStr[start:], `"`) + start
-		if r, ok := result.(*struct {
-			Thought   string `json:"thought"`
-			Command   string `json:"command"`
-			Completed bool   `json:"completed"`
-		}); ok {
-			r.Thought = jsonStr[start:end]
-		}
+		step.Error = err.Error()
+		step.Success = false
+		a.logger.Error("Command failed", "error", err, "output", string(output))
+	} else {
+		step.Success = true
+		a.logger.Info("Command succeeded", "output", string(output))
 	}
 
-	// Extract command
-	if start := strings.Index(jsonStr, `"command"`); start != -1 {
-		start = strings.Index(jsonStr[start:], `"`) + start + 1
-		start = strings.Index(jsonStr[start:], `"`) + start + 1
-		end := strings.Index(jsonStr[start:], `"`) + start
-		if r, ok := result.(*struct {
-			Thought   string `json:"thought"`
-			Command   string `json:"command"`
-			Completed bool   `json:"completed"`
-		}); ok {
-			r.Command = jsonStr[start:end]
-		}
-	}
-
-	// Extract completed
-	if start := strings.Index(jsonStr, `"completed"`); start != -1 {
-		if strings.Contains(jsonStr[start:start+50], "true") {
-			if r, ok := result.(*struct {
-				Thought   string `json:"thought"`
-				Command   string `json:"command"`
-				Completed bool   `json:"completed"`
-			}); ok {
-				r.Completed = true
-			}
-		}
-	}
-
-	return nil
+	a.history.AddStep(step)
 }

@@ -32,7 +32,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := agentInstance.Run(); err != nil {
+	if err := agentInstance.Run(cfg.Task); err != nil {
 		log.Error("Agent execution failed", "error", err)
 		os.Exit(1)
 	}
