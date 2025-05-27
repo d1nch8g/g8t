@@ -40,7 +40,7 @@ type Agent struct {
 	workingDir   string
 }
 
-const MaxRememberedCommands = 15
+const MaxRememberedCommands = 10
 
 func NewAgent(client gpt.GPTClient, cfg *config.Config) (*Agent, error) {
 	agent := &Agent{
@@ -419,6 +419,7 @@ func (a *Agent) parseResponse(response string) (*AgentResponse, error) {
 
 func (a *Agent) Run() error {
 	a.logf("🚀 Starting agent with task: %s", a.config.Task)
+	a.logf("🤖 Using provider: %s", a.config.Provider)
 	a.logf("📁 Working directory: %s", a.workingDir)
 	a.logf("📝 Maximum commands allowed: %d", a.config.MaxCommands)
 	a.logf("🧠 Command memory limit: %d", MaxRememberedCommands)
@@ -434,7 +435,7 @@ func (a *Agent) Run() error {
 		userMsg := a.buildUserMessage()
 
 		if a.config.Verbose {
-			a.logf("📤 Sending request to Yandex GPT...")
+			a.logf("📤 Sending request to %s...", a.config.Provider)
 		}
 
 		response, err := a.client.Complete(systemMsg, userMsg)
@@ -500,6 +501,24 @@ func (a *Agent) Run() error {
 	return fmt.Errorf("reached maximum number of commands (%d) without completion", a.config.MaxCommands)
 }
 
+// createGPTClient creates the appropriate GPT client based on configuration
+func createGPTClient(cfg *config.Config) (gpt.GPTClient, error) {
+	switch cfg.Provider {
+	case "yandex":
+		return gpt.NewYandexGPTClient(cfg.FolderID, cfg.IAMToken), nil
+	case "openai":
+		return gpt.NewOpenAIClient(cfg.OpenAIKey, cfg.OpenAIModel), nil
+	case "deepseek":
+		return gpt.NewDeepSeekClient(cfg.DeepSeekKey, cfg.DeepSeekModel), nil
+	case "claude":
+		return gpt.NewClaudeClient(cfg.ClaudeKey, cfg.ClaudeModel), nil
+	case "gemini":
+		return gpt.NewGeminiClient(cfg.GeminiKey, cfg.GeminiModel), nil
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
+	}
+}
+
 func main() {
 	cfg, err := config.Parse()
 	if err != nil {
@@ -517,8 +536,11 @@ func main() {
 		cfg.PrintConfig()
 	}
 
-	// Create Yandex GPT client
-	client := gpt.NewYandexGPTClient(cfg.FolderID, cfg.IAMToken)
+	// Create GPT client based on provider
+	client, err := createGPTClient(cfg)
+	if err != nil {
+		log.Fatalf("❌ Failed to create GPT client: %v", err)
+	}
 
 	// Create agent
 	agent, err := NewAgent(client, cfg)
