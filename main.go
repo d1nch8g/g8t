@@ -24,17 +24,23 @@ type CommandLog struct {
 }
 
 type AgentResponse struct {
-	Done    bool   `json:"done"`
-	Command string `json:"command,omitempty"`
-	Thought string `json:"thought,omitempty"`
+	Done     bool   `json:"done"`
+	Command  string `json:"command,omitempty"`
+	Thought  string `json:"thought,omitempty"`
+	Plan     string `json:"plan,omitempty"`
+	Progress string `json:"progress,omitempty"`
 }
 
 type Agent struct {
-	client     gpt.GPTClient
-	config     *config.Config
-	commandLog []CommandLog
-	logFile    *os.File
+	client       gpt.GPTClient
+	config       *config.Config
+	commandLog   []CommandLog
+	logFile      *os.File
+	longTermPlan string
+	workingDir   string
 }
+
+const MaxRememberedCommands = 15
 
 func NewAgent(client gpt.GPTClient, cfg *config.Config) (*Agent, error) {
 	agent := &Agent{
@@ -42,6 +48,13 @@ func NewAgent(client gpt.GPTClient, cfg *config.Config) (*Agent, error) {
 		config:     cfg,
 		commandLog: make([]CommandLog, 0),
 	}
+
+	// Get current working directory
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get working directory: %w", err)
+	}
+	agent.workingDir = wd
 
 	// Setup log file if specified
 	if cfg.LogFile != "" {
@@ -167,6 +180,9 @@ func (a *Agent) executeCommand(command string) (string, error) {
 		cmd = exec.Command("bash", "-c", command)
 	}
 
+	// Set working directory for command execution
+	cmd.Dir = a.workingDir
+
 	output, err := cmd.CombinedOutput()
 	duration := time.Since(start)
 
@@ -184,81 +200,178 @@ func (a *Agent) executeCommand(command string) (string, error) {
 
 	a.commandLog = append(a.commandLog, logEntry)
 
+	// Keep only the last MaxRememberedCommands to limit context size
+	if len(a.commandLog) > MaxRememberedCommands {
+		a.commandLog = a.commandLog[len(a.commandLog)-MaxRememberedCommands:]
+	}
+
 	return string(output), err
 }
 
+func (a *Agent) getRepositoryContext() string {
+	context := ""
+
+	// Check if we're in a git repository
+	if _, err := os.Stat(".git"); err == nil {
+		context += "📁 Working in a Git repository\n"
+
+		// Get git status if available
+		cmd := exec.Command("git", "status", "--porcelain")
+		cmd.Dir = a.workingDir
+		if output, err := cmd.Output(); err == nil && len(output) > 0 {
+			context += fmt.Sprintf("Git status: %s\n", strings.TrimSpace(string(output)))
+		}
+
+		// Get current branch
+		cmd = exec.Command("git", "branch", "--show-current")
+		cmd.Dir = a.workingDir
+		if output, err := cmd.Output(); err == nil {
+			context += fmt.Sprintf("Current branch: %s\n", strings.TrimSpace(string(output)))
+		}
+	}
+
+	// Check for common project files
+	projectFiles := []string{"go.mod", "package.json", "Cargo.toml", "requirements.txt", "Makefile", "README.md"}
+	foundFiles := []string{}
+
+	for _, file := range projectFiles {
+		if _, err := os.Stat(file); err == nil {
+			foundFiles = append(foundFiles, file)
+		}
+	}
+
+	if len(foundFiles) > 0 {
+		context += fmt.Sprintf("📋 Project files found: %s\n", strings.Join(foundFiles, ", "))
+	}
+
+	return context
+}
+
 func (a *Agent) buildSystemMessage() string {
-	return fmt.Sprintf(`You are an AI agent that executes terminal commands to complete tasks. Your task: %s
+	repoContext := a.getRepositoryContext()
+
+	systemMsg := fmt.Sprintf(`You are an AI agent that executes terminal commands to complete high-level tasks.
+
+TASK: %s
+
+WORKING DIRECTORY: %s
+%s
 
 CRITICAL RULES:
-1. NEVER use 'cd' commands - they don't work. Use full paths like 'dest/file.go'
+1. NEVER use 'cd' commands - they don't work. Use full paths or relative paths from working directory
 2. Use 'mkdir -p dirname' instead of 'mkdir dirname' to avoid errors
 3. For multi-line files, use this syntax:
    cat > filename << 'EOF'
    file content here
    EOF
 4. DON'T repeat commands that already failed
-5. Include ALL required imports in Go files (fmt, net/http, etc.)
+5. Include ALL required imports in code files
 6. Check your work with 'ls' and 'cat filename' before marking done
+7. When working with existing repositories, respect the existing structure and conventions
+
+PLANNING AND MEMORY:
+- This is a HIGH-LEVEL task that may require multiple steps
+- Create a plan and break it down into smaller actionable steps
+- Remember your progress and update your plan as needed
+- Use the "plan" field to store your long-term strategy
+- Use the "progress" field to track what you've accomplished
+
+RESPONSE FORMAT:
+You must respond ONLY in JSON format with these fields:
+{
+  "done": false,
+  "command": "exact_command_to_execute",
+  "thought": "brief_explanation_of_current_step",
+  "plan": "your_overall_strategy_and_remaining_steps",
+  "progress": "what_youve_accomplished_so_far"
+}
+
+OR when task is complete:
+{
+  "done": true,
+  "thought": "task_completion_summary",
+  "progress": "final_summary_of_what_was_accomplished"
+}
 
 GOOD command examples:
-- mkdir -p dest
-- cat > dest/main.go << 'EOF'
-- ls dest/
-- cat dest/main.go
-- go run dest/main.go
+- ls -la (explore current directory)
+- find . -name "*.go" -type f (find specific files)
+- mkdir -p new/directory/structure
+- cat > path/to/file.go << 'EOF'
+- git status (check repository state)
+- go mod tidy (manage dependencies)
 
 BAD command examples:
-- cd dest (doesn't work)
-- mkdir dest (use mkdir -p)
+- cd directory (doesn't work)
+- mkdir directory (use mkdir -p)
 - echo 'line1\nline2' > file (escapes don't work)
 
-Respond ONLY in JSON format:
-{"done": false, "command": "exact_command", "thought": "brief_explanation"}
-OR
-{"done": true, "thought": "task_completed_summary"}
+Remember: You have a limit of %d remembered commands, so plan efficiently!`,
+		a.config.Task, a.workingDir, repoContext, MaxRememberedCommands)
 
-Task: %s`, a.config.Task, a.config.Task)
+	return systemMsg
 }
 
 func (a *Agent) buildUserMessage() string {
 	if len(a.commandLog) == 0 {
-		return "No commands executed yet. Start working on the task."
+		return "No commands executed yet. Start by exploring the current environment and creating your plan."
 	}
 
+	message := ""
+
+	// Include long-term plan if available
+	if a.longTermPlan != "" {
+		message += fmt.Sprintf("CURRENT PLAN:\n%s\n\n", a.longTermPlan)
+	}
+
+	// Show recent command history (limited to save tokens)
+	message += "RECENT COMMAND HISTORY:\n"
+	start := 0
+	if len(a.commandLog) > 5 {
+		start = len(a.commandLog) - 5
+	}
+
+	for i := start; i < len(a.commandLog); i++ {
+		log := a.commandLog[i]
+		status := "✅"
+		if log.Error != "" {
+			status = "❌"
+		}
+
+		// Truncate long outputs to save tokens
+		output := strings.TrimSpace(log.Output)
+		if len(output) > 200 {
+			output = output[:200] + "... [truncated]"
+		}
+
+		message += fmt.Sprintf("%s %s\n", status, log.Command)
+		if output != "" {
+			message += fmt.Sprintf("   Output: %s\n", output)
+		}
+		if log.Error != "" {
+			message += fmt.Sprintf("   Error: %s\n", log.Error)
+		}
+	}
+
+	// Show last command details
 	lastLog := a.commandLog[len(a.commandLog)-1]
-	message := fmt.Sprintf("Last command: %s\nOutput: %s", lastLog.Command, lastLog.Output)
+	message += fmt.Sprintf("\nLAST COMMAND RESULT:\n")
+	message += fmt.Sprintf("Command: %s\n", lastLog.Command)
+
+	if lastLog.Output != "" {
+		output := strings.TrimSpace(lastLog.Output)
+		if len(output) > 500 {
+			output = output[:500] + "... [truncated]"
+		}
+		message += fmt.Sprintf("Output: %s\n", output)
+	}
 
 	if lastLog.Error != "" {
-		message += fmt.Sprintf("\nError: %s", lastLog.Error)
+		message += fmt.Sprintf("Error: %s\n", lastLog.Error)
 	}
 
-	// Include recent command history (last 3 commands to show context)
-	if len(a.commandLog) > 1 {
-		message += "\n\nRecent command history:\n"
-		start := len(a.commandLog) - 3
-		if start < 0 {
-			start = 0
-		}
-
-		for i := start; i < len(a.commandLog); i++ {
-			log := a.commandLog[i]
-			status := "✅"
-			if log.Error != "" {
-				status = "❌"
-			}
-			message += fmt.Sprintf("%s %s -> %s", status, log.Command, strings.TrimSpace(log.Output))
-			if log.Error != "" {
-				message += fmt.Sprintf(" (Error: %s)", log.Error)
-			}
-			message += "\n"
-		}
-	}
-
-	// Add current working directory info
-	if wd, err := os.Getwd(); err == nil {
-		message += fmt.Sprintf("\nCurrent directory: %s", wd)
-	}
+	message += fmt.Sprintf("\nWorking Directory: %s", a.workingDir)
+	message += fmt.Sprintf("\nCommands executed: %d/%d remembered", len(a.commandLog), MaxRememberedCommands)
 
 	return message
 }
@@ -306,7 +419,9 @@ func (a *Agent) parseResponse(response string) (*AgentResponse, error) {
 
 func (a *Agent) Run() error {
 	a.logf("🚀 Starting agent with task: %s", a.config.Task)
+	a.logf("📁 Working directory: %s", a.workingDir)
 	a.logf("📝 Maximum commands allowed: %d", a.config.MaxCommands)
+	a.logf("🧠 Command memory limit: %d", MaxRememberedCommands)
 	if a.config.DryRun {
 		a.logf("🔍 Running in DRY RUN mode - no commands will be executed")
 	}
@@ -337,6 +452,18 @@ func (a *Agent) Run() error {
 			continue
 		}
 
+		// Update long-term plan if provided
+		if agentResp.Plan != "" {
+			a.longTermPlan = agentResp.Plan
+			if a.config.Verbose {
+				a.logf("📋 Plan updated: %s", agentResp.Plan)
+			}
+		}
+
+		if agentResp.Progress != "" {
+			a.logf("📊 Progress: %s", agentResp.Progress)
+		}
+
 		if agentResp.Thought != "" {
 			a.logf("💭 Agent thought: %s", agentResp.Thought)
 		}
@@ -344,6 +471,9 @@ func (a *Agent) Run() error {
 		if agentResp.Done {
 			a.logf("✅ Task completed successfully!")
 			a.logf("📊 Total commands executed: %d", len(a.commandLog))
+			if agentResp.Progress != "" {
+				a.logf("🎯 Final result: %s", agentResp.Progress)
+			}
 			return nil
 		}
 
