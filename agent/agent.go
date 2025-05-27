@@ -99,6 +99,8 @@ func New(cfg *config.Config, log *logger.Logger) (*Agent, error) {
 
 func createGPTClient(cfg *config.Config) (gpt.Client, error) {
 	switch cfg.Provider {
+	case "yandex":
+		return gpt.NewYandexClient(cfg.FolderID, cfg.IAMToken), nil
 	case "openai":
 		return gpt.NewOpenAIClient(cfg.OpenAIKey, cfg.OpenAIModel), nil
 	case "gemini":

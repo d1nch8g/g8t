@@ -55,18 +55,18 @@ type Response struct {
 	} `json:"result"`
 }
 
-// YandexGPTClient is a client for the Yandex GPT API
-type YandexGPTClient struct {
+// YandexClient is a client for the Yandex GPT API
+type YandexClient struct {
 	FolderID   string
 	IAMToken   string
 	HTTPClient *http.Client
 	ModelURI   string
 }
 
-// NewYandexGPTClient creates a new Yandex GPT client
-func NewYandexGPTClient(folderID, iamToken string) *YandexGPTClient {
+// NewYandexClient creates a new Yandex GPT client
+func NewYandexClient(folderID, iamToken string) *YandexClient {
 	logrus.Info("[gpt] Creating new Yandex GPT client")
-	return &YandexGPTClient{
+	return &YandexClient{
 		FolderID:   folderID,
 		IAMToken:   iamToken,
 		HTTPClient: &http.Client{},
@@ -75,7 +75,7 @@ func NewYandexGPTClient(folderID, iamToken string) *YandexGPTClient {
 }
 
 // Complete sends a completion request to the Yandex GPT API
-func (c *YandexGPTClient) Complete(systemMessage, userMessage string) (string, error) {
+func (c *YandexClient) Complete(systemMessage, userMessage string) (string, error) {
 	logrus.Info("[gpt] Sending completion request to Yandex GPT API")
 	req := Request{
 		ModelURI: c.ModelURI,

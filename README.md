@@ -21,3 +21,14 @@ To use g8t, you need to provide a task description as a command-line argument. F
 ## Configuration
 
 g8t supports multiple AI providers: Yandex, OpenAI, DeepSeek, Claude, Gemini, and Ollama. You need to configure the API keys and model names for your chosen provider. The configuration is stored in `~/.g8t.yml`.
+
+## Installation
+
+To install the project, follow these steps:
+
+1. Ensure that you have Go installed on your system.
+2. Install it with Go:
+
+```sh
+go install github.com/d1nch8g/g8t/cmd/g8t@latest
+```
