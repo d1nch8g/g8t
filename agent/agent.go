@@ -109,6 +109,8 @@ func createGPTClient(cfg *config.Config) (gpt.Client, error) {
 		return gpt.NewGeminiClient(cfg.GeminiKey, cfg.GeminiModel), nil
 	case "yandex":
 		return gpt.NewYandexGPTClient(cfg.FolderID, cfg.IAMToken), nil
+	case "ollama":
+		return gpt.NewOllamaClient(cfg.OllamaURL, cfg.OllamaModel), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}

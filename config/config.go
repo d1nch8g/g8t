@@ -30,6 +30,10 @@ type Config struct {
 	GeminiKey   string `long:"gemini-key" description:"Gemini API key"`
 	GeminiModel string `long:"gemini-model" description:"Gemini model" default:"gemini-pro"`
 
+	// Ollama settings
+	OllamaURL   string `long:"ollama-url" description:"Ollama API URL" default:"http://localhost:11434"`
+	OllamaModel string `long:"ollama-model" description:"Ollama model" default:"llama2"`
+
 	// Task settings
 	Task        string `short:"T" long:"task" description:"Task description for the agent" required:"true"`
 	MaxCommands int    `short:"m" long:"max-commands" description:"Maximum number of commands to execute" default:"20"`
@@ -73,6 +77,10 @@ func (c *Config) Validate() error {
 		if c.GeminiKey == "" {
 			return fmt.Errorf("gemini provider requires gemini-key")
 		}
+	case "ollama":
+		if c.OllamaURL == "" || c.OllamaModel == "" {
+			return fmt.Errorf("ollama provider requires ollama-url and ollama-model")
+		}
 	default:
 		return fmt.Errorf("unsupported provider: %s", c.Provider)
 	}
@@ -104,6 +112,7 @@ Supported Providers:
   deepseek - DeepSeek models (requires deepseek-key)
   claude   - Anthropic Claude models (requires claude-key)
   gemini   - Google Gemini models (requires gemini-key)
+  ollama   - Ollama models (requires ollama-url and ollama-model)
 
 Examples:
   # Using Yandex GPT
