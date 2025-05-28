@@ -68,9 +68,6 @@ func (h *History) GetContext() string {
 		context.WriteString(fmt.Sprintf("\nStep %d:\n", step.Number))
 		context.WriteString(fmt.Sprintf("Thought: %s\n", step.Thought))
 		context.WriteString(fmt.Sprintf("Command: %s\n", step.Command))
-		if step.Output != "" {
-			context.WriteString(fmt.Sprintf("Output: %s\n", step.Output))
-		}
 		if step.Error != "" {
 			context.WriteString(fmt.Sprintf("Error: %s\n", step.Error))
 		}
@@ -137,7 +134,6 @@ Rules:
 
 Important guidelines for creating files:
 - For multi-line files, use 'cat > filename << EOF' followed by the content and 'EOF' on a new line
-- Alternatively, use 'printf' with actual newlines instead of \n escape sequences
 - Never use echo with \n or \\n for multi-line content as it creates malformed files
 - Ensure proper formatting and indentation for code files
 
