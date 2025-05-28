@@ -138,7 +138,19 @@ Rules:
 3. Use the "command" field for the exact shell command to run
 4. If the task is complete, use "command": "TASK_COMPLETE"
 5. Be careful with destructive operations
-6. Consider the current directory and file structure`
+6. Consider the current directory and file structure
+
+Important guidelines for creating files:
+- For multi-line files, use 'cat > filename << EOF' followed by the content and 'EOF' on a new line
+- Alternatively, use 'printf' with actual newlines instead of \n escape sequences
+- Never use echo with \n or \\n for multi-line content as it creates malformed files
+- Ensure proper formatting and indentation for code files
+
+Example of correct multi-line file creation:
+cat > multiline << EOF
+first line
+second line
+EOF`
 
 	for a.stepCount < a.config.MaxCommands {
 		a.stepCount++
