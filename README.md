@@ -1,10 +1,6 @@
-# Project README
-
 ## Description
 
 g8t is a command-line tool that helps you execute tasks using AI assistants. It supports multiple AI providers and allows configuration of various execution parameters.
-
-## Usage
 
 ## Configuration
 

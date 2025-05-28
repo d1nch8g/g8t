@@ -10,12 +10,12 @@ import (
 
 	"github.com/d1nch8g/g8t/config"
 	"github.com/d1nch8g/g8t/gpt"
-	"github.com/d1nch8g/g8t/logger"
+	"github.com/sirupsen/logrus"
 )
 
 type Agent struct {
 	config    *Config
-	logger    *logger.Logger
+	logger    *logrus.Logger
 	gptClient gpt.Client
 	history   *History
 	stepCount int
@@ -80,7 +80,7 @@ func (h *History) GetContext() string {
 	return context.String()
 }
 
-func New(cfg *config.Config, log *logger.Logger) (*Agent, error) {
+func New(cfg *config.Config, log *logrus.Logger) (*Agent, error) {
 	// Create GPT client based on provider
 	gptClient, err := createGPTClient(cfg)
 	if err != nil {
@@ -117,12 +117,12 @@ func createGPTClient(cfg *config.Config) (gpt.Client, error) {
 }
 
 func (a *Agent) Run(task string) error {
-	a.logger.Info("Starting agent execution",
-		"task", fmt.Sprintf("%s %s", a.config.Provider, task),
-		"provider", a.config.Provider,
-		"max_commands", a.config.MaxCommands,
-		"dry_run", a.config.DryRun,
-	)
+	a.logger.WithFields(logrus.Fields{
+		"task":         fmt.Sprintf("%s %s", a.config.Provider, task),
+		"provider":     a.config.Provider,
+		"max_commands": a.config.MaxCommands,
+		"dry_run":      a.config.DryRun,
+	}).Info("🚀 Starting agent execution")
 
 	systemMessage := `You are an AI assistant that helps execute tasks by running shell commands.
 
@@ -154,7 +154,7 @@ EOF`
 
 	for a.stepCount < a.config.MaxCommands {
 		a.stepCount++
-		a.logger.Info("Starting step", "step", a.stepCount)
+		a.logger.WithField("step", a.stepCount).Info("⚙️ Starting step")
 
 		// Build user message with context
 		userMessage := fmt.Sprintf("Task: %s\n\n%s\n\nWhat should I do next?", task, a.history.GetContext())
@@ -168,13 +168,16 @@ EOF`
 		// Parse the response
 		thought, command, err := a.parseResponse(response)
 		if err != nil {
-			a.logger.Error("Failed to parse response", "error", err, "response", response)
+			a.logger.WithFields(logrus.Fields{
+				"error":    err,
+				"response": response,
+			}).Error("❌ Failed to parse response")
 			continue
 		}
 
 		// Check if task is complete
 		if command == "TASK_COMPLETE" {
-			a.logger.Info("Task completed", "thought", thought)
+			a.logger.WithField("thought", thought).Info("✅ Task completed")
 			return nil
 		}
 
@@ -218,7 +221,7 @@ func (a *Agent) extractJSON(response string) string {
 	return ""
 }
 
-func (a *Agent) parseJSON(jsonStr string, logger *logger.Logger) (string, string, error) {
+func (a *Agent) parseJSON(jsonStr string, logger *logrus.Logger) (string, string, error) {
 	var parsed struct {
 		Thought string `json:"thought"`
 		Command string `json:"command"`
@@ -230,7 +233,10 @@ func (a *Agent) parseJSON(jsonStr string, logger *logger.Logger) (string, string
 		if len(jsonStr) > 255 {
 			truncatedJSON = jsonStr[:255] + "..."
 		}
-		logger.Error("Failed to parse JSON", "error", err, "json", truncatedJSON)
+		logger.WithFields(logrus.Fields{
+			"error": err,
+			"json":  truncatedJSON,
+		}).Error("❌ Failed to parse JSON")
 		return "", "", fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
@@ -249,10 +255,13 @@ func (a *Agent) executeCommand(thought, command string) {
 		Command:   command,
 	}
 
-	a.logger.Info("Executing command", "thought", thought, "command", command)
+	a.logger.WithFields(logrus.Fields{
+		"thought": thought,
+		"command": command,
+	}).Info("🔧 Executing command")
 
 	if a.config.DryRun {
-		a.logger.Info("Dry run mode - command not executed")
+		a.logger.Info("🏃 Dry run mode - command not executed")
 		step.Output = "DRY RUN - command not executed"
 		step.Success = true
 		a.history.AddStep(step)
@@ -270,10 +279,13 @@ func (a *Agent) executeCommand(thought, command string) {
 	if err != nil {
 		step.Error = err.Error()
 		step.Success = false
-		a.logger.Error("Command failed", "error", err, "output", string(output))
+		a.logger.WithFields(logrus.Fields{
+			"error":  err,
+			"output": string(output),
+		}).Error("❌ Command failed")
 	} else {
 		step.Success = true
-		a.logger.Info("Command succeeded", "output", string(output))
+		a.logger.WithField("output", string(output)).Info("✅ Command succeeded")
 	}
 
 	a.history.AddStep(step)

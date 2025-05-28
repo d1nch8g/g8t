@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -65,7 +63,6 @@ type YandexClient struct {
 
 // NewYandexClient creates a new Yandex GPT client
 func NewYandexClient(folderID, iamToken string) *YandexClient {
-	logrus.Info("[gpt] Creating new Yandex GPT client")
 	return &YandexClient{
 		FolderID:   folderID,
 		IAMToken:   iamToken,
@@ -76,7 +73,6 @@ func NewYandexClient(folderID, iamToken string) *YandexClient {
 
 // Complete sends a completion request to the Yandex GPT API
 func (c *YandexClient) Complete(systemMessage, userMessage string) (string, error) {
-	logrus.Info("[gpt] Sending completion request to Yandex GPT API")
 	req := Request{
 		ModelURI: c.ModelURI,
 		CompletionOptions: CompletionOptions{
@@ -97,13 +93,11 @@ func (c *YandexClient) Complete(systemMessage, userMessage string) (string, erro
 
 	reqBody, err := json.Marshal(req)
 	if err != nil {
-		logrus.Errorf("[gpt] Failed to marshal request: %v", err)
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequest("POST", YandexGPTEndpoint, bytes.NewBuffer(reqBody))
 	if err != nil {
-		logrus.Errorf("[gpt] Failed to create request: %v", err)
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -113,23 +107,19 @@ func (c *YandexClient) Complete(systemMessage, userMessage string) (string, erro
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
-		logrus.Errorf("[gpt] Failed to send request: %v", err)
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		logrus.Errorf("[gpt] API request failed with status %d: %s", resp.StatusCode, string(body))
 		return "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var response Response
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		logrus.Errorf("[gpt] Failed to decode response: %v", err)
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	logrus.Info("[gpt] Successfully received response from Yandex GPT API")
 	return response.Result.Alternatives[0].Message.Text, nil
 }
